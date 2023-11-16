@@ -1309,11 +1309,15 @@ let
     };
 
     smokeping = {
+      metricProvider = {
+        services.ntp.enable = true;
+      };
       exporterConfig = {
         enable = true;
         hosts = [ "127.0.0.1" ];
       };
       exporterTest = ''
+        wait_for_unit("ntpd.service")
         wait_for_unit("prometheus-smokeping-exporter.service")
         wait_for_open_port(9374)
         wait_until_succeeds(
