@@ -9,11 +9,14 @@ let
   nltkDir = "/var/cache/paperless/nltk";
   defaultFont = "${pkgs.liberation_ttf}/share/fonts/truetype/LiberationSerif-Regular.ttf";
 
+  settingsFormat = pkgs.formats.keyValue {};
+  configFile = settingsFormat.generate "paperless.conf" cfg.settings;
+
   # Don't start a redis instance if the user sets a custom redis connection
-  enableRedis = !hasAttr "PAPERLESS_REDIS" cfg.extraConfig;
+  enableRedis = !hasAttr "PAPERLESS_REDIS" cfg.settings;
   redisServer = config.services.redis.servers.paperless;
 
-  env = {
+  defaultSettings = {
     PAPERLESS_DATA_DIR = cfg.dataDir;
     PAPERLESS_MEDIA_ROOT = cfg.mediaDir;
     PAPERLESS_CONSUMPTION_DIR = cfg.consumptionDir;
@@ -24,13 +27,11 @@ let
     PAPERLESS_TIME_ZONE = config.time.timeZone;
   } // optionalAttrs enableRedis {
     PAPERLESS_REDIS = "unix://${redisServer.unixSocket}";
-  } // (
-    lib.mapAttrs (_: toString) cfg.extraConfig
-  );
+  };
 
   manage = pkgs.writeShellScript "manage" ''
     set -o allexport # Export the following env vars
-    ${lib.toShellVars env}
+    ${lib.toShellVars cfg.settings}
     exec ${pkg}/bin/paperless-ngx "$@"
   '';
 
@@ -78,10 +79,11 @@ let
   };
 in
 {
-  meta.maintainers = with maintainers; [ erikarvstedt Flakebi leona ];
+  meta.maintainers = with maintainers; [ ajaxbits erikarvstedt Flakebi leona ];
 
   imports = [
     (mkRenamedOptionModule [ "services" "paperless-ng" ] [ "services" "paperless" ])
+    (mkRenamedOptionModule [ "services" "paperless" "extraConfig" ] [ "services" "paperless" "settings" ])
   ];
 
   options.services.paperless = {
@@ -160,12 +162,14 @@ in
       description = lib.mdDoc "Web interface port.";
     };
 
-    # FIXME this should become an RFC42-style settings attr
-    extraConfig = mkOption {
-      type = types.attrs;
-      default = { };
+    settings = mkOption {
+      type = types.submodule {
+        # All values that don't have an associated option have to be of this type
+        freeformType = settingsFormat.type;
+      };
+      default = defaultSettings;
       description = lib.mdDoc ''
-        Extra paperless config options.
+        Paperless config options.
 
         See [the documentation](https://docs.paperless-ngx.com/configuration/)
         for available options.
@@ -219,7 +223,7 @@ in
         ExecStart = "${pkg}/bin/celery --app paperless beat --loglevel INFO";
         Restart = "on-failure";
       };
-      environment = env;
+      environment.PAPERLESS_CONFIGURATION_PATH = configFile;
 
       preStart = ''
         ln -sf ${manage} ${cfg.dataDir}/paperless-manage
@@ -275,7 +279,7 @@ in
         # Needs to talk to mail server for automated import rules
         PrivateNetwork = false;
       };
-      environment = env;
+      environment.PAPERLESS_CONFIGURATION_PATH = configFile;
     };
 
     # Reading the user-provided password file requires root access
@@ -318,7 +322,7 @@ in
         ExecStart = "${pkg}/bin/paperless-ngx document_consumer";
         Restart = "on-failure";
       };
-      environment = env;
+      environment.PAPERLESS_CONFIGURATION_PATH = configFile;
     };
 
     systemd.services.paperless-web = {
@@ -359,7 +363,8 @@ in
         AmbientCapabilities = [ "CAP_NET_BIND_SERVICE" ];
         CapabilityBoundingSet = [ "CAP_NET_BIND_SERVICE" ];
       };
-      environment = env // {
+      environment = {
+        PAPERLESS_CONFIGURATION_PATH = configFile;
         PYTHONPATH = "${pkg.python.pkgs.makePythonPath pkg.propagatedBuildInputs}:${pkg}/lib/paperless-ngx/src";
       };
       # Allow the web interface to access the private /tmp directory of the server.
